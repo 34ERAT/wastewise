@@ -1,120 +1,137 @@
-from django.db import models
-from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
-from django.utils import timezone
+from uuid import uuid4
+from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.contrib.gis.db import models
 
-# -------------------------------
-# Custom User Model
-# -------------------------------
+
 class UserManager(BaseUserManager):
-    def create_user(self, email, password=None, **extra_fields):
+    def create_user(self, email, password=None, **extra_fields) -> "User":
         if not email:
-            raise ValueError("Email must be provided")
+            raise ValueError("The Email field must be set")
         email = self.normalize_email(email)
+        extra_fields.setdefault("is_active", True)
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email, password=None, **extra_fields):
+    def create_superuser(self, email, password=None, **extra_fields) -> "User":
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
+
         return self.create_user(email, password, **extra_fields)
 
-class User(AbstractBaseUser, PermissionsMixin):
-    email = models.EmailField(unique=True)
-    name = models.CharField(max_length=100,blank=True, null=True)
-    stars = models.PositiveIntegerField(default=0)
-    is_active = models.BooleanField(default=True)
-    is_staff = models.BooleanField(default=False)
-    
-    objects = UserManager() 
-    USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = []
 
-     
+class User(AbstractUser):
+    class UserTypes(models.Choices):
+        HOUSEHOLD = "Household"
+        SME = "sme"
+        COUNCIL = "Council"
+        RECYCLER = "Recycler"
 
-    def __str__(self):
-        return self.email
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    email = models.EmailField(max_length=255, unique=True)
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    # password = models.CharField(max_length=255)
+    user_type = models.CharField(
+        max_length=20, choices=UserTypes.choices, default=UserTypes.HOUSEHOLD
+    )
+    location = models.PointField(geography=True, null=True, blank=True)
+    username = None
+    first_name = None
+    last_name = None
+    objects = UserManager()
+
+    USERNAME_FIELD = "email"
+    REQUIRED_FIELDS = ["user_type"]
+
+    def __str__(self) -> str:
+        return f"{self.email} ({self.user_type}) "
 
 
-# -------------------------------
-# County Model
-# -------------------------------
-class County(models.Model):
-    name = models.CharField(max_length=100, unique=True)
+class BaseModel(models.Model):
+    """Absttract base model with uuid pk and timstamp"""
 
-    def __str__(self):
+    id = models.UUIDField(primary_key=True, default=uuid4(), editable=False)
+    create_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+    update_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+
+
+class WasteType(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid4(), editable=False)
+    name = models.CharField(max_length=50)
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self) -> str:
         return self.name
 
-# -------------------------------
-# SubCounty Model
-# -------------------------------
-class SubCounty(models.Model):
-    county = models.ForeignKey(County, on_delete=models.CASCADE, related_name='subcounties')
+
+class WasteRequest(BaseModel):
+    class StatusChoices(models.Choices):
+        PENDING = "pending"
+        ASSIGNED = "assigned"
+        COMPLETED = "completed"
+        CANCELLED = "cancelled"
+
+    user = models.ForeignKey(User, on_delete=models.RESTRICT)
+    waste_type = models.ForeignKey(WasteType, on_delete=models.RESTRICT)
+    volume_kg = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(
+        max_length=20, choices=StatusChoices.choices, default=StatusChoices.PENDING
+    )
+    schedule_time = models.DateTimeField()
+    location = models.PointField(geography=True, null=True, blank=True)
+
+    def __str__(self) -> str:
+        return f"request {self.id} - {self.user.name}"
+
+
+class Vehicle(BaseModel):
+    class StatusChoices(models.Choices):
+        AVAILABE = "availabe"
+        BUSY = "busy"
+        OFFLINE = "offline"
+
+    driver_name = models.CharField(max_length=100)
+    phone = models.CharField(max_length=20, unique=True)
+    current_location = models.PointField(geography=True, null=True, blank=True)
+    status = models.CharField(
+        max_length=20, choices=StatusChoices.choices, default=StatusChoices.AVAILABE
+    )
+
+    def __str__(self) -> str:
+        return f"vehicle {self.id} - {self.driver_name}"
+
+
+class RecyclingCenter(BaseModel):
     name = models.CharField(max_length=100)
+    email = models.EmailField(blank=True, unique=True)
+    phone = models.CharField(max_length=20, unique=True)
+    location = models.PointField(geography=True, null=True, blank=True)
 
-    class Meta:
-        unique_together = ('county', 'name')
+    def __str__(self) -> str:
+        return self.name
 
-    def __str__(self):
-        return f"{self.name} ({self.county.name})"
 
-# -------------------------------
-# Area Model
-# -------------------------------
-class Area(models.Model):
-    subcounty = models.ForeignKey(SubCounty, on_delete=models.CASCADE, related_name='areas')
-    name = models.CharField(max_length=100)
+class Collection(BaseModel):
+    class StatusChoices(models.Choices):
+        IN_PROGRESS = "in_progress"
+        COMPLETED = "completed"
+        Failed = "failed"
 
-    class Meta:
-        unique_together = ('subcounty', 'name')
-
-    def __str__(self):
-        return f"{self.name} ({self.subcounty.name}, {self.subcounty.county.name})"
-# -------------------------------
-# Driver Model
-# -------------------------------
-class Driver(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
-    vehicle_number = models.CharField(max_length=50)
+    waste_request = models.ForeignKey(WasteRequest, on_delete=models.RESTRICT)
+    vehicle = models.ForeignKey(Vehicle, on_delete=models.RESTRICT)
+    pickup_time = models.DateTimeField(null=True, blank=True)
+    delivered_to = models.ForeignKey(
+        RecyclingCenter, on_delete=models.RESTRICT, null=True
+    )
+    status = models.CharField(
+        max_length=20, choices=StatusChoices.choices, default=StatusChoices.IN_PROGRESS
+    )
 
     def __str__(self):
-        return f"Driver: {self.user.name}"
-
-# -------------------------------
-# Booking Model
-# -------------------------------
-class Booking(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    area = models.ForeignKey(Area, on_delete=models.CASCADE)
-    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    address = models.CharField(max_length=255, blank=True, null=True)  # Formatted address from the long and lat
-    raw_response = models.JSONField(blank=True, null=True) 
-    pickup_date = models.DateField()
-    is_completed = models.BooleanField(default=False)
-
-    def __str__(self):
-        return f"Booking by {self.user.email} on {self.pickup_date}"
-
-# -------------------------------
-# Pickup Model
-# -------------------------------
-class Pickup(models.Model):
-    booking = models.OneToOneField(Booking, on_delete=models.CASCADE)
-    driver = models.ForeignKey(Driver, on_delete=models.SET_NULL, null=True)
-    completed_at = models.DateTimeField(default=timezone.now)
-
-    def save(self, *args, **kwargs):
-        # 1. Mark booking as complete before saving pickup
-        if not self.booking.is_completed:
-            self.booking.is_completed = True
-            self.booking.save(update_fields=['is_completed'])
-        super().save(*args, **kwargs)
-        # Award star to users
-        user = self.booking.user
-        user.stars += 1
-        user.save()
-
-    def __str__(self):
-        return f"Pickup for {self.booking.user.email} by {self.driver.user.email}"
+        return f"Collection {self.id} for Request {self.waste_request.id}"

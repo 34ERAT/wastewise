@@ -1,89 +1,101 @@
+from django.contrib.auth.models import update_last_login
 from rest_framework import serializers
-from .models import (
-    User, County, SubCounty, Area,
-    Driver, Booking, Pickup
+from app.models import (
+    Collection,
+    RecyclingCenter,
+    User,
+    Vehicle,
+    WasteRequest,
+    WasteType,
 )
 
-# -------------------------------
-# User Serializer
-# -------------------------------
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import authenticate
+
+
 class UserSerializer(serializers.ModelSerializer):
+    """create user  user"""
+
     class Meta:
         model = User
-        fields = ['id', 'email', 'name', 'stars']
+        fields = ["id", "email", "phone", "user_type", "password"]
+        read_only_fields = ["id"]
+        extra_kwargs = {"password": {"write_only": True}}
 
-# -------------------------------
-# Location Serializers
-# -------------------------------
-class CountySerializer(serializers.ModelSerializer):
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+        print(validated_data)
+        user = User(**validated_data)
+        user.set_password(password)  # hash password
+        user.save()
+        return user
+
+
+class LoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        print({"email": data.get("email"), "password": data.get("password")})
+        user = authenticate(
+            request=self.context.get("request"),
+            email=data.get("email"),
+            password=data.get("password"),
+        )
+
+        if user is None:
+            raise AuthenticationFailed("Invalid email or password")
+        if not user.is_active:
+            raise AuthenticationFailed("User account is disabled")
+
+        update_last_login(None, user)
+        refresh = RefreshToken.for_user(user)
+
+        return {
+            "user": UserSerializer(user).data,
+            "accessToken": str(refresh.access_token),
+            "refreshToken": str(refresh),
+        }
+
+
+class WasteTypeSerializer(serializers.ModelSerializer):
     class Meta:
-        model = County
-        fields = ['id', 'name']
+        model = WasteType
+        fields = ["id", "name", "description"]
 
-class SubCountySerializer(serializers.ModelSerializer):
-    county = CountySerializer(read_only=True)
-    county_id = serializers.PrimaryKeyRelatedField(
-        queryset=County.objects.all(), source='county', write_only=True
-    )
 
-    class Meta:
-        model = SubCounty
-        fields = ['id', 'name', 'county', 'county_id']
-
-class AreaSerializer(serializers.ModelSerializer):
-    subcounty = SubCountySerializer(read_only=True)
-    subcounty_id = serializers.PrimaryKeyRelatedField(
-        queryset=SubCounty.objects.all(), source='subcounty', write_only=True
-    )
-
-    class Meta:
-        model = Area
-        fields = ['id', 'name', 'subcounty', 'subcounty_id']
-
-# -------------------------------
-# Driver Serializer
-# -------------------------------
-class DriverSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
-    user_id = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(), source='user', write_only=True
-    )
-
-    class Meta:
-        model = Driver
-        fields = ['id', 'user', 'user_id', 'vehicle_number']
-
-# -------------------------------
-# Booking Serializer
-# -------------------------------
-class BookingSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
-    user_id = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(), source='user', write_only=True
-    )
-    area = AreaSerializer(read_only=True)
-    area_id = serializers.PrimaryKeyRelatedField(
-        queryset=Area.objects.all(), source='area', write_only=True
-    )
+class WasteRequestSerializer(serializers.ModelSerializer):
+    waste_type = serializers.StringRelatedField(read_only=True)
+    user = serializers.StringRelatedField(read_only=True)
 
     class Meta:
-        model = Booking
-        fields = ['id', 'user', 'user_id', 'area', 'area_id', 'latitude', 'longitude',
-            'address', 'raw_response','pickup_date', 'is_completed']
+        model = WasteRequest
+        fields = [
+            "user",
+            "waste_type",
+            "volume_kg",
+            "status",
+            "schedule_time",
+            "location",
+        ]
 
-# -------------------------------
-# Pickup Serializer
-# -------------------------------
-class PickupSerializer(serializers.ModelSerializer):
-    booking = BookingSerializer(read_only=True)
-    booking_id = serializers.PrimaryKeyRelatedField(
-        queryset=Booking.objects.all(), source='booking', write_only=True
-    )
-    driver = DriverSerializer(read_only=True)
-    driver_id = serializers.PrimaryKeyRelatedField(
-        queryset=Driver.objects.all(), source='driver', write_only=True
-    )
+
+class VehicleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Vehicle
+        fields = "__all__"
+
+
+class RecyclingCenterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecyclingCenter
+        fields = "__all__"
+
+
+class CollectionSerializer(serializers.ModelSerializer):
+    delivered_to = RecyclingCenterSerializer()
 
     class Meta:
-        model = Pickup
-        fields = ['id', 'booking', 'booking_id', 'driver', 'driver_id', 'completed_at']
+        model = Collection
+        fields = "__all__"
